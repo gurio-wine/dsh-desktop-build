@@ -100,8 +100,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: pnpm
-          cache-dependency-path: C:\dsh\pnpm-lock.yaml
 
       - name: Prepare Windows environment
         if: steps.existing.outputs.exists != 'true'
