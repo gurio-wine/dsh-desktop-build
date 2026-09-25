@@ -137,23 +137,32 @@ export function resolveDesktopAutoUpdateConfig(env, platform, arch) {
     if (originEnvName === undefined) throw new Error('desktop auto-update: selected deployment has no origin')
     origin = httpsOrigin(requiredEnvironmentValue(env, originEnvName), originEnvName)
   }
-  let releasePrefix = 'dsh-desk'
-  if (environment === 'test') {
-    const releaseId = requiredEnvironmentValue(env, 'DOWNLOAD_TEST_RELEASE_ID')
-    if (!/^[a-f0-9]{32}$/u.test(releaseId)) {
-      throw new Error('desktop auto-update: DOWNLOAD_TEST_RELEASE_ID must contain 32 lowercase hexadecimal characters')
+    let releasePrefix = 'dsh-desk'
+    if (environment === 'test') {
+      const releaseId = requiredEnvironmentValue(env, 'DOWNLOAD_TEST_RELEASE_ID')
+      if (!/^[a-f0-9]{32}$/u.test(releaseId)) {
+        throw new Error('desktop auto-update: DOWNLOAD_TEST_RELEASE_ID must contain 32 lowercase hexadecimal characters')
+      }
+      releasePrefix += `/${releaseId}`
     }
-    releasePrefix += `/${releaseId}`
-  }
-  const keyPrefix = `${releasePrefix}/feeds/${target}`
-  return {
-    environment,
-    target,
-    origin,
-    keyPrefix,
-    binaryKeyPrefix: `${releasePrefix}/bin/${target}`,
-    publicUrl: `${origin}/${keyPrefix}/`,
-  }
+  
+    const basePath = (env.DOWNLOAD_TEST_BASE_PATH?.trim() ?? '')
+      .replace(/^\/+|\/+$/gu, '')
+  
+    const keyPrefix = `${releasePrefix}/feeds/${target}`
+  
+    const publicUrl = basePath === ''
+      ? `${origin}/${keyPrefix}/`
+      : `${origin}/${basePath}/${keyPrefix}/`
+  
+    return {
+      environment,
+      target,
+      origin,
+      keyPrefix,
+      binaryKeyPrefix: `${releasePrefix}/bin/${target}`,
+      publicUrl,
+    }
 }
 
 /**
