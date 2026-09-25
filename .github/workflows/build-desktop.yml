@@ -105,10 +105,37 @@ jobs:
         if: steps.existing.outputs.exists != 'true'
         shell: pwsh
         working-directory: C:\dsh
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
         run: |
-          Copy-Item `
-            "apps\desktop\.env.windows.example" `
-            "apps\desktop\.env.windows"
+          $releaseId = (
+            [System.Security.Cryptography.SHA256]::HashData(
+              [System.Text.Encoding]::UTF8.GetBytes($env:TAG)
+            ) |
+            ForEach-Object { $_.ToString("x2") }
+          ) -join ''
+
+          $releaseId = $releaseId.Substring(0, 32)
+
+          @(
+            'DSH_DESKTOP_APP_ID=com.deepseek.harness'
+            'DSH_DESKTOP_AUTO_UPDATE_ENV=test'
+            'DOWNLOAD_TEST_ORIGIN=https://example.com'
+            "DOWNLOAD_TEST_RELEASE_ID=$releaseId"
+            ''
+            'DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN=https://example.com'
+            'DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN='
+            'DSH_DESKTOP_MANDATORY_UPDATE_CONFIG=''{"allowedAuthOrigins":["https://login.example.com"]}'''
+            ''
+            'DSH_DESKTOP_WINDOWS_CER_FILE='
+            'DSH_DESKTOP_WINDOWS_SIGNTOOL='
+            'DSH_DESKTOP_WINDOWS_KEY_CONTAINER='
+            'DSH_DESKTOP_WINDOWS_TOKEN_PIN='
+            'DSH_DESKTOP_WINDOWS_SIGNATURE_CACHE_CONCURRENCY=4'
+          ) | Set-Content -LiteralPath 'apps\desktop\.env.windows' -Encoding UTF8
+
+          Write-Host "Desktop environment prepared."
+          Write-Host "Release ID: $releaseId"
 
       - name: Install dependencies
         if: steps.existing.outputs.exists != 'true'
