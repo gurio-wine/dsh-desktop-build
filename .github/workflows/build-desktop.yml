@@ -3,11 +3,10 @@ name: Build DSH Desktop
 on:
   workflow_dispatch:
     inputs:
-      test_rc1:
-        description: "Build upstream rc.1 only for updater testing"
+      test_tag:
+        description: "Optional upstream tag to build for updater testing, e.g. dsh-v0.1.7-rc.1"
         required: false
-        default: false
-        type: boolean
+        type: string
 
   schedule:
     - cron: "*/15 * * * *"
@@ -30,6 +29,14 @@ jobs:
         id: upstream
         shell: pwsh
         run: |
+          $requestedTag = "${{ inputs.test_tag }}".Trim()
+
+          if ($requestedTag) {
+            "tag=$requestedTag" >> $env:GITHUB_OUTPUT
+            Write-Host "Using manually requested upstream tag: $requestedTag"
+            exit 0
+          }
+
           $headers = @{
             Accept = "application/vnd.github+json"
             "User-Agent" = "DSH-Desktop-Builder"
@@ -51,13 +58,10 @@ jobs:
           }
 
           $tag = [string]$release.tag_name
-          $publishedAt = [string]$release.published_at
 
           "tag=$tag" >> $env:GITHUB_OUTPUT
-          "published_at=$publishedAt" >> $env:GITHUB_OUTPUT
 
           Write-Host "Upstream Release : $tag"
-          Write-Host "Published        : $publishedAt"
 
       - name: Check whether Release already exists
         id: existing
