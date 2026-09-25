@@ -89,6 +89,68 @@ jobs:
 
           git describe --tags --always
 
+      - name: Patch Desktop updater for GitHub Pages
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        working-directory: C:\dsh
+        run: |
+          $configPath = "apps\desktop\scripts\electron-builder-config.mjs"
+          $config = Get-Content -LiteralPath $configPath -Raw
+
+          $old = "const update = unsigned ? undefined : resolveDesktopAutoUpdateConfig(env, resolvedPlatform, resolvedArch)"
+          $new = "const update = resolveDesktopAutoUpdateConfig(env, resolvedPlatform, resolvedArch)"
+
+          if (-not $config.Contains($old)) {
+            throw "Expected unsigned updater guard was not found in electron-builder-config.mjs."
+          }
+
+          $config = $config.Replace($old, $new)
+          Set-Content -LiteralPath $configPath -Value $config -Encoding UTF8
+
+          $envPath = "apps\desktop\scripts\desktop-auto-update-environment.mjs"
+          $envText = Get-Content -LiteralPath $envPath -Raw
+
+          $oldBlock = @'
+            const keyPrefix = `${releasePrefix}/feeds/${target}`
+            return {
+              environment,
+              target,
+              origin,
+              keyPrefix,
+              binaryKeyPrefix: `${releasePrefix}/bin/${target}`,
+              publicUrl: `${origin}/${keyPrefix}/`,
+            }
+          '@
+
+          $newBlock = @'
+            const basePath = (env.DOWNLOAD_TEST_BASE_PATH?.trim() ?? '')
+              .replace(/^\/+|\/+$/gu, '')
+          
+            const keyPrefix = `${releasePrefix}/feeds/${target}`
+          
+            const publicUrl = basePath === ''
+              ? `${origin}/${keyPrefix}/`
+              : `${origin}/${basePath}/${keyPrefix}/`
+          
+            return {
+              environment,
+              target,
+              origin,
+              keyPrefix,
+              binaryKeyPrefix: `${releasePrefix}/bin/${target}`,
+              publicUrl,
+            }
+          '@
+
+          if (-not $envText.Contains($oldBlock)) {
+            throw "Expected updater URL block was not found in desktop-auto-update-environment.mjs."
+          }
+
+          $envText = $envText.Replace($oldBlock, $newBlock)
+          Set-Content -LiteralPath $envPath -Value $envText -Encoding UTF8
+
+          Write-Host "Desktop updater patch applied."
+
       - name: Setup pnpm
         if: steps.existing.outputs.exists != 'true'
         uses: pnpm/action-setup@v4
