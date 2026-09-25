@@ -391,7 +391,7 @@ jobs:
           Write-Host "$tag"
 
       - name: Prepare GitHub Pages update feed
-        if: steps.existing.outputs.exists != 'true'
+        if: steps.existing.outputs.exists != 'true' && !inputs.test_tag
         shell: pwsh
         working-directory: C:\dsh
         env:
@@ -455,17 +455,17 @@ jobs:
             -Raw
 
       - name: Setup GitHub Pages
-        if: steps.existing.outputs.exists != 'true'
+        if: steps.existing.outputs.exists != 'true' && !inputs.test_tag
         uses: actions/configure-pages@v5
 
       - name: Upload GitHub Pages artifact
-        if: steps.existing.outputs.exists != 'true'
+        if: steps.existing.outputs.exists != 'true' && !inputs.test_tag
         uses: actions/upload-pages-artifact@v4
         with:
           path: C:\dsh-pages
 
       - name: Deploy GitHub Pages
-        if: steps.existing.outputs.exists != 'true'
+        if: steps.existing.outputs.exists != 'true' && !inputs.test_tag
         id: deployment
         uses: actions/deploy-pages@v4
 
