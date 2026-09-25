@@ -54,15 +54,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.upstream.outputs.tag }}
         run: |
-          gh release view "$env:TAG" --repo "${{ github.repository }}" *> $null
-
-          if ($LASTEXITCODE -eq 0) {
+          $repo = "${{ github.repository }}"
+          $tag = "$env:TAG"
+          
+          gh release view "$tag" --repo "$repo" *> $null
+          $code = $LASTEXITCODE
+          
+          if ($code -eq 0) {
             "exists=true" >> $env:GITHUB_OUTPUT
-            Write-Host "Release already exists: $env:TAG"
-          } else {
-            "exists=false" >> $env:GITHUB_OUTPUT
-            Write-Host "Release does not exist yet: $env:TAG"
+            Write-Host "Release already exists: $tag"
+            exit 0
           }
+          
+          if ($code -eq 1) {
+            "exists=false" >> $env:GITHUB_OUTPUT
+            Write-Host "Release does not exist yet: $tag"
+            exit 0
+          }
+          
+          throw "gh release view failed with exit code $code"
 
       - name: Checkout upstream release
         if: steps.existing.outputs.exists != 'true'
