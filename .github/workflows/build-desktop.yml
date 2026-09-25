@@ -1,0 +1,168 @@
+name: Build DSH Desktop
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  check-and-build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check latest upstream release
+        id: upstream
+        shell: pwsh
+        run: |
+          $headers = @{
+            Accept = "application/vnd.github+json"
+            "User-Agent" = "DSH-Desktop-Builder"
+          }
+
+          $releases = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/deepseek-ai/deepseek-harness/releases?per_page=100" `
+            -Headers $headers
+
+          $release = @(
+            $releases |
+              Where-Object { -not $_.draft } |
+              Sort-Object { [datetime]$_.published_at } -Descending |
+              Select-Object -First 1
+          )
+
+          if (-not $release) {
+            throw "No upstream release found."
+          }
+
+          $tag = [string]$release.tag_name
+          $publishedAt = [string]$release.published_at
+
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "published_at=$publishedAt" >> $env:GITHUB_OUTPUT
+
+          Write-Host "Upstream Release : $tag"
+          Write-Host "Published        : $publishedAt"
+
+      - name: Check whether Release already exists
+        id: existing
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          gh release view "$env:TAG" --repo "${{ github.repository }}" *> $null
+
+          if ($LASTEXITCODE -eq 0) {
+            "exists=true" >> $env:GITHUB_OUTPUT
+            Write-Host "Release already exists: $env:TAG"
+          } else {
+            "exists=false" >> $env:GITHUB_OUTPUT
+            Write-Host "Release does not exist yet: $env:TAG"
+          }
+
+      - name: Checkout upstream release
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          git init C:\dsh
+          Set-Location C:\dsh
+
+          git remote add upstream https://github.com/deepseek-ai/deepseek-harness.git
+          git fetch --depth 1 upstream "refs/tags/$env:TAG"
+          git checkout --detach FETCH_HEAD
+
+          git describe --tags --always
+
+      - name: Setup Node.js
+        if: steps.existing.outputs.exists != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: C:\dsh\pnpm-lock.yaml
+
+      - name: Setup pnpm
+        if: steps.existing.outputs.exists != 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+
+      - name: Prepare Windows environment
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        working-directory: C:\dsh
+        run: |
+          Copy-Item `
+            "apps\desktop\.env.windows.example" `
+            "apps\desktop\.env.windows"
+
+      - name: Install dependencies
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        working-directory: C:\dsh
+        run: |
+          pnpm install --frozen-lockfile
+
+      - name: Build Windows Desktop installer
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        working-directory: C:\dsh
+        run: |
+          pnpm run package:desktop:win:x64:unsigned
+
+      - name: Find installer
+        if: steps.existing.outputs.exists != 'true'
+        id: installer
+        shell: pwsh
+        run: |
+          $artifactDir = "C:\dsh\apps\desktop\.desktop-build\targets\win-x64\unsigned-artifacts"
+
+          $installer = Get-ChildItem `
+            -LiteralPath $artifactDir `
+            -Filter "deepseek-harness-*-win-x64-unsigned.exe" `
+            -File |
+            Select-Object -First 1
+
+          if (-not $installer) {
+            throw "Installer not found."
+          }
+
+          Write-Host "Installer: $($installer.FullName)"
+
+          "path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
+          "name=$($installer.Name)" >> $env:GITHUB_OUTPUT
+
+      - name: Publish GitHub Release
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.upstream.outputs.tag }}
+          INSTALLER: ${{ steps.installer.outputs.path }}
+          INSTALLER_NAME: ${{ steps.installer.outputs.name }}
+        run: |
+          Set-Location C:\dsh
+
+          git tag "$env:TAG"
+          git push https://x-access-token:$env:GH_TOKEN@github.com/${{ github.repository }}.git "refs/tags/$env:TAG"
+
+          gh release create "$env:TAG" `
+            --repo "${{ github.repository }}" `
+            --title "DSH Desktop $env:TAG" `
+            --notes "Automatically built from upstream DeepSeek Harness release $env:TAG." `
+            "$env:INSTALLER"
+
+      - name: Skip existing release
+        if: steps.existing.outputs.exists == 'true'
+        shell: pwsh
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          Write-Host "DSH Desktop $env:TAG has already been built."
+          Write-Host "Nothing to do."
