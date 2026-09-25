@@ -105,27 +105,17 @@ jobs:
         if: steps.existing.outputs.exists != 'true'
         shell: pwsh
         working-directory: C:\dsh
-        env:
-          TAG: ${{ steps.upstream.outputs.tag }}
         run: |
-          $releaseId = (
-            [System.Security.Cryptography.SHA256]::HashData(
-              [System.Text.Encoding]::UTF8.GetBytes($env:TAG)
-            ) |
-            ForEach-Object { $_.ToString("x2") }
-          ) -join ''
-
-          $releaseId = $releaseId.Substring(0, 32)
-
           @(
             'DSH_DESKTOP_APP_ID=com.deepseek.harness'
             'DSH_DESKTOP_AUTO_UPDATE_ENV=test'
-            'DOWNLOAD_TEST_ORIGIN=https://example.com'
-            "DOWNLOAD_TEST_RELEASE_ID=$releaseId"
+            'DOWNLOAD_TEST_ORIGIN=https://gurio-wine.github.io'
+            'DOWNLOAD_TEST_BASE_PATH=/dsh-desktop-build'
+            'DOWNLOAD_TEST_RELEASE_ID=3d29e03575185c65f183afa0f455a28f'
             ''
-            'DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN=https://example.com'
+            'DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN=https://gurio-wine.github.io'
             'DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN='
-            'DSH_DESKTOP_MANDATORY_UPDATE_CONFIG=''{"allowedAuthOrigins":["https://login.example.com"]}'''
+            'DSH_DESKTOP_MANDATORY_UPDATE_CONFIG=''{"allowedPageOrigins":["https://gurio-wine.github.io"],"allowedAuthOrigins":["https://login.example.com"]}'''
             ''
             'DSH_DESKTOP_WINDOWS_CER_FILE='
             'DSH_DESKTOP_WINDOWS_SIGNTOOL='
@@ -134,8 +124,8 @@ jobs:
             'DSH_DESKTOP_WINDOWS_SIGNATURE_CACHE_CONCURRENCY=4'
           ) | Set-Content -LiteralPath 'apps\desktop\.env.windows' -Encoding UTF8
 
-          Write-Host "Desktop environment prepared."
-          Write-Host "Release ID: $releaseId"
+          Write-Host "Desktop update origin: https://gurio-wine.github.io/dsh-desktop-build"
+          Write-Host "Desktop update feed: https://gurio-wine.github.io/dsh-desktop-build/dsh-desk/3d29e03575185c65f183afa0f455a28f/feeds/win-x64/"
 
       - name: Install dependencies
         if: steps.existing.outputs.exists != 'true'
