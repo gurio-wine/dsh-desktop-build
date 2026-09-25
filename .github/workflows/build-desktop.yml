@@ -8,10 +8,16 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 jobs:
   check-and-build:
     runs-on: windows-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
       - name: Check latest upstream release
@@ -373,6 +379,85 @@ jobs:
           Write-Host ""
           Write-Host "GitHub Release published:"
           Write-Host "$tag"
+
+      - name: Prepare GitHub Pages update feed
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        working-directory: C:\dsh
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+          INSTALLER_NAME: ${{ steps.installer.outputs.name }}
+        run: |
+          $repo = "${{ github.repository }}"
+          $tag = "$env:TAG"
+
+          $artifactDir = "apps\desktop\.desktop-build\targets\win-x64\unsigned-artifacts"
+
+          $feed = Get-ChildItem `
+            -LiteralPath $artifactDir `
+            -Filter "nightly.yml" `
+            -Recurse `
+            -File |
+            Select-Object -First 1
+
+          if (-not $feed) {
+            throw "nightly.yml was not found."
+          }
+
+          $siteDir = "C:\dsh-pages"
+          $feedDir = Join-Path `
+            $siteDir `
+            "dsh-desk\3d29e03575185c65f183afa0f455a28f\feeds\win-x64"
+
+          New-Item -ItemType Directory -Force -Path $feedDir | Out-Null
+
+          $assetUrl = "https://github.com/$repo/releases/download/$tag/$env:INSTALLER_NAME"
+
+          $metadata = Get-Content `
+            -LiteralPath $feed.FullName `
+            -Raw `
+            -Encoding UTF8
+
+          $metadata = [regex]::Replace(
+            $metadata,
+            '(?m)^(\s*-\s*url:\s*).*$',
+            { param($m) $m.Groups[1].Value + $assetUrl }
+          )
+
+          $metadata | Set-Content `
+            -LiteralPath (Join-Path $feedDir "nightly.yml") `
+            -Encoding UTF8
+
+          # Prevent Jekyll from processing the static update files.
+          New-Item `
+            -ItemType File `
+            -Force `
+            -Path (Join-Path $siteDir ".nojekyll") |
+            Out-Null
+
+          Write-Host "GitHub Pages feed:"
+          Write-Host (Join-Path $feedDir "nightly.yml")
+
+          Write-Host ""
+          Write-Host "=== nightly.yml ==="
+          Get-Content `
+            -LiteralPath (Join-Path $feedDir "nightly.yml") `
+            -Raw
+
+      - name: Setup GitHub Pages
+        if: steps.existing.outputs.exists != 'true'
+        uses: actions/configure-pages@v5
+
+      - name: Upload GitHub Pages artifact
+        if: steps.existing.outputs.exists != 'true'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: C:\dsh-pages
+
+      - name: Deploy GitHub Pages
+        if: steps.existing.outputs.exists != 'true'
+        id: deployment
+        uses: actions/deploy-pages@v4
 
       - name: Skip existing release
         if: steps.existing.outputs.exists == 'true'
