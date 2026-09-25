@@ -2,6 +2,12 @@ name: Build DSH Desktop
 
 on:
   workflow_dispatch:
+    inputs:
+      test_rc1:
+        description: "Build upstream rc.1 only for updater testing"
+        required: false
+        default: false
+        type: boolean
 
   schedule:
     - cron: "*/15 * * * *"
