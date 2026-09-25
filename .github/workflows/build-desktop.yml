@@ -89,6 +89,12 @@ jobs:
 
           git describe --tags --always
 
+      - name: Setup pnpm
+        if: steps.existing.outputs.exists != 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      
       - name: Setup Node.js
         if: steps.existing.outputs.exists != 'true'
         uses: actions/setup-node@v4
@@ -96,12 +102,6 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: C:\dsh\pnpm-lock.yaml
-
-      - name: Setup pnpm
-        if: steps.existing.outputs.exists != 'true'
-        uses: pnpm/action-setup@v4
-        with:
-          version: 11.7.0
 
       - name: Prepare Windows environment
         if: steps.existing.outputs.exists != 'true'
