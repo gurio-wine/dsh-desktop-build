@@ -203,6 +203,72 @@ jobs:
         run: |
           pnpm run package:desktop:win:x64:unsigned
 
+      - name: Verify updater artifacts
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        working-directory: C:\dsh
+        run: |
+          $artifactDir = "apps\desktop\.desktop-build\targets\win-x64\unsigned-artifacts"
+
+          Write-Host "=== Windows unsigned artifacts ==="
+          Get-ChildItem -LiteralPath $artifactDir -Recurse -File |
+            Where-Object {
+              $_.Name -match '\.(exe|blockmap|yml)$'
+            } |
+            Select-Object FullName, Length
+
+          Write-Host ""
+          Write-Host "=== Checking nightly.yml ==="
+
+          $feed = Get-ChildItem `
+            -LiteralPath $artifactDir `
+            -Filter "nightly.yml" `
+            -Recurse `
+            -File |
+            Select-Object -First 1
+
+          if (-not $feed) {
+            throw "nightly.yml was not generated."
+          }
+
+          Write-Host "nightly.yml: $($feed.FullName)"
+
+          Write-Host ""
+          Write-Host "=== Checking blockmap ==="
+
+          $blockmap = Get-ChildItem `
+            -LiteralPath $artifactDir `
+            -Filter "*.exe.blockmap" `
+            -Recurse `
+            -File |
+            Select-Object -First 1
+
+          if (-not $blockmap) {
+            throw "Windows NSIS blockmap was not generated."
+          }
+
+          Write-Host "blockmap: $($blockmap.FullName)"
+
+          Write-Host ""
+          Write-Host "=== Checking packaged updater config ==="
+
+          $appUpdate = Get-ChildItem `
+            -LiteralPath $artifactDir `
+            -Filter "app-update.yml" `
+            -Recurse `
+            -File |
+            Select-Object -First 1
+
+          if (-not $appUpdate) {
+            throw "Packaged app-update.yml was not generated."
+          }
+
+          Write-Host "app-update.yml: $($appUpdate.FullName)"
+
+          Write-Host ""
+          Write-Host "=== nightly.yml ==="
+          Get-Content -LiteralPath $feed.FullName -Raw
+
       - name: Find installer
         if: steps.existing.outputs.exists != 'true'
         id: installer
