@@ -312,18 +312,67 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.upstream.outputs.tag }}
           INSTALLER: ${{ steps.installer.outputs.path }}
-          INSTALLER_NAME: ${{ steps.installer.outputs.name }}
         run: |
-          Set-Location C:\dsh
+          $repo = "${{ github.repository }}"
+          $tag = "$env:TAG"
 
-          git tag "$env:TAG"
-          git push https://x-access-token:$env:GH_TOKEN@github.com/${{ github.repository }}.git "refs/tags/$env:TAG"
+          $blockmap = Get-ChildItem `
+            -LiteralPath "C:\dsh\apps\desktop\.desktop-build\targets\win-x64\unsigned-artifacts" `
+            -Filter "*.exe.blockmap" `
+            -File |
+            Select-Object -First 1
 
-          gh release create "$env:TAG" `
-            --repo "${{ github.repository }}" `
-            --title "DSH Desktop $env:TAG" `
-            --notes "Automatically built from upstream DeepSeek Harness release $env:TAG." `
-            "$env:INSTALLER"
+          if (-not $blockmap) {
+            throw "Windows blockmap was not found."
+          }
+
+          Write-Host "Installer : $env:INSTALLER"
+          Write-Host "Blockmap  : $($blockmap.FullName)"
+
+          $headers = @{
+            Accept = "application/vnd.github+json"
+            "User-Agent" = "DSH-Desktop-Builder"
+          }
+
+          $upstreamRelease = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/deepseek-ai/deepseek-harness/releases/tags/$tag" `
+            -Headers $headers
+
+          $notesFile = Join-Path $env:RUNNER_TEMP "upstream-release-notes.md"
+
+          $notes = [string]$upstreamRelease.body
+
+          if ([string]::IsNullOrWhiteSpace($notes)) {
+            $notes = "Automatically built from upstream DeepSeek Harness release $tag."
+          }
+
+          @(
+            "> Automatically built from official DeepSeek Harness release [$tag](https://github.com/deepseek-ai/deepseek-harness/releases/tag/$tag)."
+            ""
+            $notes
+          ) | Set-Content -LiteralPath $notesFile -Encoding UTF8
+
+          $title = [string]$upstreamRelease.name
+
+          if ([string]::IsNullOrWhiteSpace($title)) {
+            $title = "DSH Desktop $tag"
+          }
+
+          git tag "$tag"
+          git push `
+            "https://x-access-token:$env:GH_TOKEN@github.com/$repo.git" `
+            "refs/tags/$tag"
+
+          gh release create "$tag" `
+            --repo "$repo" `
+            --title "$title" `
+            --notes-file "$notesFile" `
+            "$env:INSTALLER" `
+            "$($blockmap.FullName)"
+
+          Write-Host ""
+          Write-Host "GitHub Release published:"
+          Write-Host "$tag"
 
       - name: Skip existing release
         if: steps.existing.outputs.exists == 'true'
