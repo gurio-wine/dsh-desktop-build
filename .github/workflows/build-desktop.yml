@@ -226,6 +226,13 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
 
+      - name: Build native system TypeScript
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        working-directory: C:\dsh
+        run: |
+          pnpm --dir native/system run build:ts
+
       - name: Build Windows Desktop installer
         if: steps.existing.outputs.exists != 'true'
         shell: pwsh
