@@ -97,56 +97,47 @@ jobs:
           $configPath = "apps\desktop\scripts\electron-builder-config.mjs"
           $config = Get-Content -LiteralPath $configPath -Raw
 
-          $old = "const update = unsigned ? undefined : resolveDesktopAutoUpdateConfig(env, resolvedPlatform, resolvedArch)"
-          $new = "const update = resolveDesktopAutoUpdateConfig(env, resolvedPlatform, resolvedArch)"
+          $oldConfigLine = '  const update = unsigned ? undefined : resolveDesktopAutoUpdateConfig(env, resolvedPlatform, resolvedArch)'
+          $newConfigLine = '  const update = resolveDesktopAutoUpdateConfig(env, resolvedPlatform, resolvedArch)'
 
-          if (-not $config.Contains($old)) {
+          if (-not $config.Contains($oldConfigLine)) {
             throw "Expected unsigned updater guard was not found in electron-builder-config.mjs."
           }
 
-          $config = $config.Replace($old, $new)
+          $config = $config.Replace($oldConfigLine, $newConfigLine)
           Set-Content -LiteralPath $configPath -Value $config -Encoding UTF8
 
           $envPath = "apps\desktop\scripts\desktop-auto-update-environment.mjs"
           $envText = Get-Content -LiteralPath $envPath -Raw
 
-          $oldBlock = @'
-            const keyPrefix = `${releasePrefix}/feeds/${target}`
-            return {
-              environment,
-              target,
-              origin,
-              keyPrefix,
-              binaryKeyPrefix: `${releasePrefix}/bin/${target}`,
-              publicUrl: `${origin}/${keyPrefix}/`,
-            }
-          '@
+          $oldKeyPrefix = '  const keyPrefix = `${releasePrefix}/feeds/${target}`'
 
-          $newBlock = @'
-            const basePath = (env.DOWNLOAD_TEST_BASE_PATH?.trim() ?? '')
-              .replace(/^\/+|\/+$/gu, '')
-          
-            const keyPrefix = `${releasePrefix}/feeds/${target}`
-          
-            const publicUrl = basePath === ''
-              ? `${origin}/${keyPrefix}/`
-              : `${origin}/${basePath}/${keyPrefix}/`
-          
-            return {
-              environment,
-              target,
-              origin,
-              keyPrefix,
-              binaryKeyPrefix: `${releasePrefix}/bin/${target}`,
-              publicUrl,
-            }
-          '@
+          $newKeyPrefix = @(
+            '  const basePath = (env.DOWNLOAD_TEST_BASE_PATH?.trim() ?? '')'
+            '    .replace(/^\/+|\/+$/gu, '''')'
+            ''
+            '  const keyPrefix = `${releasePrefix}/feeds/${target}`'
+            ''
+            '  const publicUrl = basePath === '''''
+            '    ? `${origin}/${keyPrefix}/`'
+            '    : `${origin}/${basePath}/${keyPrefix}/`'
+          ) -join "`n"
 
-          if (-not $envText.Contains($oldBlock)) {
-            throw "Expected updater URL block was not found in desktop-auto-update-environment.mjs."
+          if (-not $envText.Contains($oldKeyPrefix)) {
+            throw "Expected updater key-prefix line was not found in desktop-auto-update-environment.mjs."
           }
 
-          $envText = $envText.Replace($oldBlock, $newBlock)
+          $envText = $envText.Replace($oldKeyPrefix, $newKeyPrefix)
+
+          $oldPublicUrl = '    publicUrl: `${origin}/${keyPrefix}/`,'
+          $newPublicUrl = '    publicUrl,'
+
+          if (-not $envText.Contains($oldPublicUrl)) {
+            throw "Expected updater publicUrl line was not found in desktop-auto-update-environment.mjs."
+          }
+
+          $envText = $envText.Replace($oldPublicUrl, $newPublicUrl)
+
           Set-Content -LiteralPath $envPath -Value $envText -Encoding UTF8
 
           Write-Host "Desktop updater patch applied."
