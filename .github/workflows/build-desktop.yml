@@ -1,0 +1,486 @@
+name: Build DSH Desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_tag:
+        description: "Optional upstream tag to build for updater testing, e.g. dsh-v0.1.7-rc.1"
+        required: false
+        type: string
+
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  check-and-build:
+    runs-on: windows-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Check latest upstream release
+        id: upstream
+        shell: pwsh
+        run: |
+          $requestedTag = "${{ inputs.test_tag }}".Trim()
+
+          if ($requestedTag) {
+            "tag=$requestedTag" >> $env:GITHUB_OUTPUT
+            Write-Host "Using manually requested upstream tag: $requestedTag"
+            exit 0
+          }
+
+          $headers = @{
+            Accept = "application/vnd.github+json"
+            "User-Agent" = "DSH-Desktop-Builder"
+          }
+
+          $releases = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/deepseek-ai/deepseek-harness/releases?per_page=100" `
+            -Headers $headers
+
+          $release = @(
+            $releases |
+              Where-Object { -not $_.draft } |
+              Sort-Object { [datetime]$_.published_at } -Descending |
+              Select-Object -First 1
+          )
+
+          if (-not $release) {
+            throw "No upstream release found."
+          }
+
+          $tag = [string]$release.tag_name
+
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+          Write-Host "Upstream Release : $tag"
+
+      - name: Check whether Release already exists
+        id: existing
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          $repo = "${{ github.repository }}"
+          $tag = "$env:TAG"
+          
+          gh release view "$tag" --repo "$repo" *> $null
+          $code = $LASTEXITCODE
+          
+          if ($code -eq 0) {
+            "exists=true" >> $env:GITHUB_OUTPUT
+            Write-Host "Release already exists: $tag"
+            exit 0
+          }
+          
+          if ($code -eq 1) {
+            "exists=false" >> $env:GITHUB_OUTPUT
+            Write-Host "Release does not exist yet: $tag"
+            exit 0
+          }
+          
+          throw "gh release view failed with exit code $code"
+
+      - name: Checkout upstream release
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          git init C:\dsh
+          Set-Location C:\dsh
+
+          git remote add upstream https://github.com/deepseek-ai/deepseek-harness.git
+          git fetch --depth 1 upstream "refs/tags/$env:TAG"
+          git checkout --detach FETCH_HEAD
+
+          git describe --tags --always
+
+      - name: Patch Desktop updater for GitHub Pages
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        working-directory: C:\dsh
+        run: |
+          # 1. unsigned 构建也生成 app-update.yml
+          $configPath = "apps\desktop\scripts\electron-builder-config.mjs"
+          $config = Get-Content -LiteralPath $configPath -Raw
+
+          $oldConfigLine = '  const update = unsigned ? undefined : resolveDesktopAutoUpdateConfig(env, resolvedPlatform, resolvedArch)'
+          $newConfigLine = '  const update = resolveDesktopAutoUpdateConfig(env, resolvedPlatform, resolvedArch)'
+
+          if (-not $config.Contains($oldConfigLine)) {
+            throw "Expected unsigned updater guard was not found in electron-builder-config.mjs."
+          }
+
+          $config = $config.Replace($oldConfigLine, $newConfigLine)
+          Set-Content -LiteralPath $configPath -Value $config -Encoding UTF8
+
+          # 2. 允许 GitHub Pages 的子路径
+          $packageEnvPath = "apps\desktop\scripts\desktop-package-environment.mjs"
+          $packageEnv = Get-Content -LiteralPath $packageEnvPath -Raw
+
+          $oldSharedSetting = "const SHARED_SETTING = /^(?:DSH_DESKTOP_(?:APP_ID|AUTO_UPDATE_ENV|NPM_REGISTRY|MANDATORY_UPDATE_(?:CONFIG|(?:TEST|PROD)_ORIGIN))|DOWNLOAD_TEST_RELEASE_ID|DOWNLOAD_(?:TEST|PROD)_(?:ORIGIN|COS_BUCKET|COS_SECRET_ID|COS_SECRET_KEY))$/u"
+
+          $newSharedSetting = "const SHARED_SETTING = /^(?:DSH_DESKTOP_(?:APP_ID|AUTO_UPDATE_ENV|NPM_REGISTRY|MANDATORY_UPDATE_(?:CONFIG|(?:TEST|PROD)_ORIGIN))|DOWNLOAD_TEST_RELEASE_ID|DOWNLOAD_TEST_BASE_PATH|DOWNLOAD_(?:TEST|PROD)_(?:ORIGIN|COS_BUCKET|COS_SECRET_ID|COS_SECRET_KEY))$/u"
+
+          if (-not $packageEnv.Contains($oldSharedSetting)) {
+            throw "Expected SHARED_SETTING definition was not found in desktop-package-environment.mjs."
+          }
+
+          $packageEnv = $packageEnv.Replace($oldSharedSetting, $newSharedSetting)
+          Set-Content -LiteralPath $packageEnvPath -Value $packageEnv -Encoding UTF8
+
+          # 3. 更新源支持 GitHub Pages 子路径
+          $envPath = "apps\desktop\scripts\desktop-auto-update-environment.mjs"
+          $envText = Get-Content -LiteralPath $envPath -Raw
+
+          $oldKeyPrefix = '  const keyPrefix = `${releasePrefix}/feeds/${target}`'
+
+          $newKeyPrefix = @'
+            const basePath = (env.DOWNLOAD_TEST_BASE_PATH?.trim() ?? '').replace(/^\/+|\/+$/gu, '')
+            const keyPrefix = `${releasePrefix}/feeds/${target}`
+            const publicUrl = basePath === ''
+              ? `${origin}/${keyPrefix}/`
+              : `${origin}/${basePath}/${keyPrefix}/`
+          '@
+
+          if (-not $envText.Contains($oldKeyPrefix)) {
+            throw "Expected updater key-prefix line was not found in desktop-auto-update-environment.mjs."
+          }
+
+          $envText = $envText.Replace($oldKeyPrefix, $newKeyPrefix.TrimEnd())
+
+          $oldPublicUrl = '    publicUrl: `${origin}/${keyPrefix}/`,'
+          $newPublicUrl = '    publicUrl,'
+
+          if (-not $envText.Contains($oldPublicUrl)) {
+            throw "Expected updater publicUrl line was not found in desktop-auto-update-environment.mjs."
+          }
+
+          $envText = $envText.Replace($oldPublicUrl, $newPublicUrl)
+          Set-Content -LiteralPath $envPath -Value $envText -Encoding UTF8
+
+          Write-Host "Desktop updater patch applied."
+
+      - name: Validate Desktop updater patch
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        working-directory: C:\dsh
+        run: |
+          node --check apps\desktop\scripts\desktop-auto-update-environment.mjs
+          node --check apps\desktop\scripts\desktop-package-environment.mjs
+          node --check apps\desktop\scripts\electron-builder-config.mjs
+          Write-Host "Desktop updater patch syntax is valid."
+
+      - name: Setup pnpm
+        if: steps.existing.outputs.exists != 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      
+      - name: Setup Node.js
+        if: steps.existing.outputs.exists != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Prepare Windows environment
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        working-directory: C:\dsh
+        run: |
+          @(
+            'DSH_DESKTOP_APP_ID=com.deepseek.harness'
+            'DSH_DESKTOP_AUTO_UPDATE_ENV=test'
+            'DOWNLOAD_TEST_ORIGIN=https://gurio-wine.github.io'
+            'DOWNLOAD_TEST_BASE_PATH=/dsh-desktop-build'
+            'DOWNLOAD_TEST_RELEASE_ID=3d29e03575185c65f183afa0f455a28f'
+            ''
+            'DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN=https://gurio-wine.github.io'
+            'DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN='
+            'DSH_DESKTOP_MANDATORY_UPDATE_CONFIG=''{"allowedPageOrigins":["https://gurio-wine.github.io"],"allowedAuthOrigins":["https://login.example.com"]}'''
+            ''
+            'DSH_DESKTOP_WINDOWS_CER_FILE='
+            'DSH_DESKTOP_WINDOWS_SIGNTOOL='
+            'DSH_DESKTOP_WINDOWS_KEY_CONTAINER='
+            'DSH_DESKTOP_WINDOWS_TOKEN_PIN='
+            'DSH_DESKTOP_WINDOWS_SIGNATURE_CACHE_CONCURRENCY=4'
+          ) | Set-Content -LiteralPath 'apps\desktop\.env.windows' -Encoding UTF8
+
+          Write-Host "Desktop update origin: https://gurio-wine.github.io/dsh-desktop-build"
+          Write-Host "Desktop update feed: https://gurio-wine.github.io/dsh-desktop-build/dsh-desk/3d29e03575185c65f183afa0f455a28f/feeds/win-x64/"
+
+      - name: Install dependencies
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        working-directory: C:\dsh
+        run: |
+          pnpm install --frozen-lockfile
+
+      - name: Build native system TypeScript
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        working-directory: C:\dsh
+        run: |
+          pnpm --dir native/system run build:ts
+
+      - name: Build Windows Desktop installer
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        working-directory: C:\dsh
+        run: |
+          pnpm run package:desktop:win:x64:unsigned
+
+      - name: Verify updater artifacts
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        working-directory: C:\dsh
+        run: |
+          $artifactDir = "apps\desktop\.desktop-build\targets\win-x64\unsigned-artifacts"
+
+          Write-Host "=== Windows unsigned artifacts ==="
+          Get-ChildItem -LiteralPath $artifactDir -Recurse -File |
+            Where-Object {
+              $_.Name -match '\.(exe|blockmap|yml)$'
+            } |
+            Select-Object FullName, Length
+
+          Write-Host ""
+          Write-Host "=== Checking nightly.yml ==="
+
+          $feed = Get-ChildItem `
+            -LiteralPath $artifactDir `
+            -Filter "nightly.yml" `
+            -Recurse `
+            -File |
+            Select-Object -First 1
+
+          if (-not $feed) {
+            throw "nightly.yml was not generated."
+          }
+
+          Write-Host "nightly.yml: $($feed.FullName)"
+
+          Write-Host ""
+          Write-Host "=== Checking blockmap ==="
+
+          $blockmap = Get-ChildItem `
+            -LiteralPath $artifactDir `
+            -Filter "*.exe.blockmap" `
+            -Recurse `
+            -File |
+            Select-Object -First 1
+
+          if (-not $blockmap) {
+            throw "Windows NSIS blockmap was not generated."
+          }
+
+          Write-Host "blockmap: $($blockmap.FullName)"
+
+          Write-Host ""
+          Write-Host "=== Checking packaged updater config ==="
+
+          $appUpdate = Get-ChildItem `
+            -LiteralPath $artifactDir `
+            -Filter "app-update.yml" `
+            -Recurse `
+            -File |
+            Select-Object -First 1
+
+          if (-not $appUpdate) {
+            throw "Packaged app-update.yml was not generated."
+          }
+
+          Write-Host "app-update.yml: $($appUpdate.FullName)"
+
+          Write-Host ""
+          Write-Host "=== nightly.yml ==="
+          Get-Content -LiteralPath $feed.FullName -Raw
+
+      - name: Find installer
+        if: steps.existing.outputs.exists != 'true'
+        id: installer
+        shell: pwsh
+        run: |
+          $artifactDir = "C:\dsh\apps\desktop\.desktop-build\targets\win-x64\unsigned-artifacts"
+
+          $installer = Get-ChildItem `
+            -LiteralPath $artifactDir `
+            -Filter "deepseek-harness-*-win-x64-unsigned.exe" `
+            -File |
+            Select-Object -First 1
+
+          if (-not $installer) {
+            throw "Installer not found."
+          }
+
+          Write-Host "Installer: $($installer.FullName)"
+
+          "path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
+          "name=$($installer.Name)" >> $env:GITHUB_OUTPUT
+
+      - name: Publish GitHub Release
+        if: steps.existing.outputs.exists != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.upstream.outputs.tag }}
+          INSTALLER: ${{ steps.installer.outputs.path }}
+        run: |
+          $repo = "${{ github.repository }}"
+          $tag = "$env:TAG"
+
+          $blockmap = Get-ChildItem `
+            -LiteralPath "C:\dsh\apps\desktop\.desktop-build\targets\win-x64\unsigned-artifacts" `
+            -Filter "*.exe.blockmap" `
+            -File |
+            Select-Object -First 1
+
+          if (-not $blockmap) {
+            throw "Windows blockmap was not found."
+          }
+
+          Write-Host "Installer : $env:INSTALLER"
+          Write-Host "Blockmap  : $($blockmap.FullName)"
+
+          $headers = @{
+            Accept = "application/vnd.github+json"
+            "User-Agent" = "DSH-Desktop-Builder"
+          }
+
+          $upstreamRelease = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/deepseek-ai/deepseek-harness/releases/tags/$tag" `
+            -Headers $headers
+
+          $notesFile = Join-Path $env:RUNNER_TEMP "upstream-release-notes.md"
+
+          $notes = [string]$upstreamRelease.body
+
+          if ([string]::IsNullOrWhiteSpace($notes)) {
+            $notes = "Automatically built from upstream DeepSeek Harness release $tag."
+          }
+
+          @(
+            "> Automatically built from official DeepSeek Harness release [$tag](https://github.com/deepseek-ai/deepseek-harness/releases/tag/$tag)."
+            ""
+            $notes
+          ) | Set-Content -LiteralPath $notesFile -Encoding UTF8
+
+          $title = [string]$upstreamRelease.name
+
+          if ([string]::IsNullOrWhiteSpace($title)) {
+            $title = "DSH Desktop $tag"
+          }
+
+          git tag "$tag"
+          git push `
+            "https://x-access-token:$env:GH_TOKEN@github.com/$repo.git" `
+            "refs/tags/$tag"
+
+          gh release create "$tag" `
+            --repo "$repo" `
+            --title "$title" `
+            --notes-file "$notesFile" `
+            "$env:INSTALLER" `
+            "$($blockmap.FullName)"
+
+          Write-Host ""
+          Write-Host "GitHub Release published:"
+          Write-Host "$tag"
+
+      - name: Prepare GitHub Pages update feed
+        if: steps.existing.outputs.exists != 'true' && !inputs.test_tag
+        shell: pwsh
+        working-directory: C:\dsh
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+          INSTALLER_NAME: ${{ steps.installer.outputs.name }}
+        run: |
+          $repo = "${{ github.repository }}"
+          $tag = "$env:TAG"
+
+          $artifactDir = "apps\desktop\.desktop-build\targets\win-x64\unsigned-artifacts"
+
+          $feed = Get-ChildItem `
+            -LiteralPath $artifactDir `
+            -Filter "nightly.yml" `
+            -Recurse `
+            -File |
+            Select-Object -First 1
+
+          if (-not $feed) {
+            throw "nightly.yml was not found."
+          }
+
+          $siteDir = "C:\dsh-pages"
+          $feedDir = Join-Path `
+            $siteDir `
+            "dsh-desk\3d29e03575185c65f183afa0f455a28f\feeds\win-x64"
+
+          New-Item -ItemType Directory -Force -Path $feedDir | Out-Null
+
+          $assetUrl = "https://github.com/$repo/releases/download/$tag/$env:INSTALLER_NAME"
+
+          $metadata = Get-Content `
+            -LiteralPath $feed.FullName `
+            -Raw `
+            -Encoding UTF8
+
+          $metadata = [regex]::Replace(
+            $metadata,
+            '(?m)^(\s*-\s*url:\s*).*$',
+            { param($m) $m.Groups[1].Value + $assetUrl }
+          )
+
+          $metadata | Set-Content `
+            -LiteralPath (Join-Path $feedDir "nightly.yml") `
+            -Encoding UTF8
+
+          # Prevent Jekyll from processing the static update files.
+          New-Item `
+            -ItemType File `
+            -Force `
+            -Path (Join-Path $siteDir ".nojekyll") |
+            Out-Null
+
+          Write-Host "GitHub Pages feed:"
+          Write-Host (Join-Path $feedDir "nightly.yml")
+
+          Write-Host ""
+          Write-Host "=== nightly.yml ==="
+          Get-Content `
+            -LiteralPath (Join-Path $feedDir "nightly.yml") `
+            -Raw
+
+      - name: Setup GitHub Pages
+        if: steps.existing.outputs.exists != 'true' && !inputs.test_tag
+        uses: actions/configure-pages@v5
+
+      - name: Upload GitHub Pages artifact
+        if: steps.existing.outputs.exists != 'true' && !inputs.test_tag
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: C:\dsh-pages
+
+      - name: Deploy GitHub Pages
+        if: steps.existing.outputs.exists != 'true' && !inputs.test_tag
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Skip existing release
+        if: steps.existing.outputs.exists == 'true'
+        shell: pwsh
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          Write-Host "DSH Desktop $env:TAG has already been built."
+          Write-Host "Nothing to do."
