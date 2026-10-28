@@ -236,7 +236,13 @@ jobs:
         shell: pwsh
         working-directory: C:\dsh
         run: |
-          pnpm install --frozen-lockfile
+          pnpm install `
+            --frozen-lockfile `
+            --fetch-timeout 300000 `
+            --fetch-retries 5 `
+            --fetch-retry-factor 2 `
+            --fetch-retry-mintimeout 10000 `
+            --fetch-retry-maxtimeout 600000
 
       - name: Build native system TypeScript
         if: steps.existing.outputs.exists != 'true'
