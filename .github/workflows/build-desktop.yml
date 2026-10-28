@@ -7,6 +7,11 @@ on:
         description: "Optional upstream tag to build for updater testing, e.g. dsh-v0.1.7-rc.1"
         required: false
         type: string
+      repair_feed:
+        description: "Rebuild and redeploy update feed"
+        required: false
+        type: boolean
+        default: false
 
   schedule:
     - cron: "7,22,37,52 * * * *"
@@ -398,81 +403,159 @@ jobs:
           Write-Host "$tag"
 
       - name: Prepare GitHub Pages update feed
-        if: steps.existing.outputs.exists != 'true' && !inputs.test_tag
+        if: ${{ !inputs.test_tag && (steps.existing.outputs.exists != 'true' || inputs.repair_feed) }}
         shell: pwsh
-        working-directory: C:\dsh
         env:
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.upstream.outputs.tag }}
+          RELEASE_EXISTS: ${{ steps.existing.outputs.exists }}
           INSTALLER_NAME: ${{ steps.installer.outputs.name }}
         run: |
+          $ErrorActionPreference = "Stop"
+
           $repo = "${{ github.repository }}"
-          $tag = "$env:TAG"
-
-          $artifactDir = "apps\desktop\.desktop-build\targets\win-x64\unsigned-artifacts"
-
-          $feed = Get-ChildItem `
-            -LiteralPath $artifactDir `
-            -Filter "nightly.yml" `
-            -Recurse `
-            -File |
-            Select-Object -First 1
-
-          if (-not $feed) {
-            throw "nightly.yml was not found."
-          }
-
+          $tag = $env:TAG
           $siteDir = "C:\dsh-pages"
-          $feedDir = Join-Path `
-            $siteDir `
-            "dsh-desk\3d29e03575185c65f183afa0f455a28f\feeds\win-x64"
+          $feedDir = Join-Path $siteDir "dsh-desk\3d29e03575185c65f183afa0f455a28f\feeds\win-x64"
 
           New-Item -ItemType Directory -Force -Path $feedDir | Out-Null
 
-          $assetUrl = "https://github.com/$repo/releases/download/$tag/$env:INSTALLER_NAME"
+          if ($env:RELEASE_EXISTS -eq "true") {
+            Write-Host "Repair mode: recovering update feed from existing Release."
 
-          $metadata = Get-Content `
-            -LiteralPath $feed.FullName `
-            -Raw `
-            -Encoding UTF8
+            $releaseJson = gh release view "$tag" --repo "$repo" --json assets,publishedAt
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to query GitHub Release."
+            }
 
-          $metadata = [regex]::Replace(
-            $metadata,
-            '(?m)^(\s*-\s*url:\s*).*$',
-            { param($m) $m.Groups[1].Value + $assetUrl }
-          )
+            $release = $releaseJson | ConvertFrom-Json
+            $installers = @(
+              $release.assets | Where-Object {
+                $_.name -like "deepseek-harness-*-win-x64-unsigned.exe"
+              }
+            )
+
+            if ($installers.Count -ne 1) {
+              throw "Expected exactly one Windows installer in Release."
+            }
+
+            $installerName = $installers[0].name
+            $downloadDir = Join-Path $env:RUNNER_TEMP "dsh-feed-repair"
+
+            New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
+
+            gh release download "$tag" `
+              --repo "$repo" `
+              --pattern "$installerName" `
+              --dir "$downloadDir"
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to download existing installer."
+            }
+
+            $installerPath = Join-Path $downloadDir $installerName
+            $size = (Get-Item -LiteralPath $installerPath).Length
+
+            $stream = [System.IO.File]::OpenRead($installerPath)
+            $hasher = [System.Security.Cryptography.SHA512]::Create()
+
+            try {
+              $hashBytes = $hasher.ComputeHash($stream)
+              $hash = [Convert]::ToBase64String($hashBytes)
+            }
+            finally {
+              $stream.Dispose()
+              $hasher.Dispose()
+            }
+
+            if ($tag -notmatch '^dsh-v(.+)$') {
+              throw "Unexpected release tag format: $tag"
+            }
+
+            $version = $Matches[1]
+            $encodedTag = [uri]::EscapeDataString($tag)
+            $encodedName = [uri]::EscapeDataString($installerName)
+            $assetUrl = "https://github.com/$repo/releases/download/$encodedTag/$encodedName"
+            $releaseDate = [string]$release.publishedAt
+
+            if ([string]::IsNullOrWhiteSpace($releaseDate)) {
+              $releaseDate = (Get-Date).ToUniversalTime().ToString("o")
+            }
+
+            $metadata = @"
+          version: $version
+          files:
+            - url: $assetUrl
+              sha512: $hash
+              size: $size
+          path: $installerName
+          sha512: $hash
+          releaseDate: $releaseDate
+          "@
+
+          }
+          else {
+            Write-Host "Normal build: using generated nightly.yml."
+
+            $artifactDir = "C:\dsh\apps\desktop\.desktop-build\targets\win-x64\unsigned-artifacts"
+
+            $feed = Get-ChildItem `
+              -LiteralPath $artifactDir `
+              -Filter "nightly.yml" `
+              -Recurse `
+              -File |
+              Select-Object -First 1
+
+            if (-not $feed) {
+              throw "nightly.yml was not generated."
+            }
+
+            $installerName = $env:INSTALLER_NAME
+            if ([string]::IsNullOrWhiteSpace($installerName)) {
+              throw "Installer name is missing."
+            }
+
+            $assetUrl = "https://github.com/$repo/releases/download/$tag/$installerName"
+
+            $metadata = Get-Content `
+              -LiteralPath $feed.FullName `
+              -Raw `
+              -Encoding UTF8
+
+            $metadata = [regex]::Replace(
+              $metadata,
+              '(?m)^(\s*-\s*url:\s*).*$',
+              { param($m) $m.Groups[1].Value + $assetUrl }
+            )
+          }
+
+          $feedPath = Join-Path $feedDir "nightly.yml"
 
           $metadata | Set-Content `
-            -LiteralPath (Join-Path $feedDir "nightly.yml") `
+            -LiteralPath $feedPath `
             -Encoding UTF8
 
-          # Prevent Jekyll from processing the static update files.
           New-Item `
             -ItemType File `
             -Force `
             -Path (Join-Path $siteDir ".nojekyll") |
             Out-Null
 
-          Write-Host "GitHub Pages feed:"
-          Write-Host (Join-Path $feedDir "nightly.yml")
-
-          Write-Host ""
-          Write-Host "=== nightly.yml ==="
-          Get-Content `
-            -LiteralPath (Join-Path $feedDir "nightly.yml") `
-            -Raw
+          Write-Host "=== Published update feed ==="
+          Get-Content -LiteralPath $feedPath -Raw
 
       - name: Setup GitHub Pages
-        if: steps.existing.outputs.exists != 'true' && !inputs.test_tag
+        if: ${{ !inputs.test_tag && (steps.existing.outputs.exists != 'true' || inputs.repair_feed) }}
         uses: actions/configure-pages@v5
 
       - name: Upload GitHub Pages artifact
-        if: steps.existing.outputs.exists != 'true' && !inputs.test_tag
+        if: ${{ !inputs.test_tag && (steps.existing.outputs.exists != 'true' || inputs.repair_feed) }}
         uses: actions/upload-pages-artifact@v4
         with:
           path: C:\dsh-pages
 
       - name: Deploy GitHub Pages
-        if: steps.existing.outputs.exists != 'true' && !inputs.test_tag
+        if: ${{ !inputs.test_tag && (steps.existing.outputs.exists != 'true' || inputs.repair_feed) }}
         id: deployment
         uses: actions/deploy-pages@v4
 
